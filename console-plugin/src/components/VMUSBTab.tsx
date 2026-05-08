@@ -71,7 +71,7 @@ const VMUSBTab: React.FC<VMUSBTabProps> = (props) => {
   });
 
   const availableDevices = React.useMemo(() => {
-    return (usbDevices as any[])?.filter((dev) => dev.status?.available) || [];
+    return (usbDevices as any[]) || [];
   }, [usbDevices]);
 
   const vmConnections = React.useMemo(() => {

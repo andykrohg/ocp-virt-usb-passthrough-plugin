@@ -1,0 +1,84 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: usbdevices.usb.openshift.io
+spec:
+  group: usb.openshift.io
+  names:
+    kind: USBDevice
+    listKind: USBDeviceList
+    plural: usbdevices
+    singular: usbdevice
+    shortNames:
+      - usbdev
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required:
+                - workstationAddress
+                - deviceID
+                - owner
+              properties:
+                workstationAddress:
+                  type: string
+                  description: "IP:port of the workstation running USB/IP server (e.g., 192.168.1.100:3240)"
+                deviceID:
+                  type: string
+                  description: "USB vendor:product ID (e.g., 090c:1000)"
+                deviceName:
+                  type: string
+                  description: "Human-readable device name"
+                vendorName:
+                  type: string
+                  description: "USB vendor name"
+                serial:
+                  type: string
+                  description: "Device serial number"
+                isCAC:
+                  type: boolean
+                  description: "Whether this is a CAC card reader"
+                owner:
+                  type: string
+                  description: "Workstation owner username"
+            status:
+              type: object
+              properties:
+                available:
+                  type: boolean
+                  description: "Whether the device is available for connection"
+                connectedTo:
+                  type: string
+                  description: "Namespace/VMname if device is connected"
+                lastSeen:
+                  type: string
+                  format: date-time
+                  description: "Last heartbeat timestamp from workstation agent"
+      additionalPrinterColumns:
+        - name: Device ID
+          type: string
+          jsonPath: .spec.deviceID
+        - name: Device Name
+          type: string
+          jsonPath: .spec.deviceName
+        - name: Owner
+          type: string
+          jsonPath: .spec.owner
+        - name: Available
+          type: boolean
+          jsonPath: .status.available
+        - name: Connected To
+          type: string
+          jsonPath: .status.connectedTo
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      subresources:
+        status: {}

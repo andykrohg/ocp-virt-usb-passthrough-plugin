@@ -1,0 +1,24 @@
+# Git
+.git
+.gitignore
+
+# Build artifacts
+*.o
+*.a
+*.so
+
+# Documentation
+README.md
+*.md
+
+# Config (will be applied separately)
+config/
+
+# Scripts
+*.sh
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo

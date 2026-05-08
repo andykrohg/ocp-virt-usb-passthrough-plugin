@@ -1,0 +1,21 @@
+# Simple Containerfile for pre-built binary
+# Build the binary first: GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o manager main.go
+
+FROM registry.access.redhat.com/ubi9-micro:latest
+
+WORKDIR /
+
+# Copy pre-built binary
+COPY manager /manager
+
+# Labels for Red Hat Container Certification
+LABEL name="usb-listener-operator" \
+      vendor="OpenShift" \
+      version="0.1.0" \
+      summary="USB Passthrough Operator for OpenShift Virtualization" \
+      description="Manages USB device passthrough from workstations to VMs using USB/IP protocol"
+
+# OpenShift runs containers with random UIDs
+RUN chmod 755 /manager
+
+ENTRYPOINT ["/manager"]

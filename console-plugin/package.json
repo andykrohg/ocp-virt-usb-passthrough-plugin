@@ -1,0 +1,51 @@
+{
+  "name": "usb-passthrough-plugin",
+  "version": "0.1.0",
+  "description": "OpenShift Console Plugin for USB device passthrough to VMs",
+  "main": "dist/plugin-entry.js",
+  "consolePlugin": {
+    "name": "usb-passthrough-plugin",
+    "version": "0.1.0",
+    "displayName": "USB Passthrough",
+    "description": "USB device passthrough for OpenShift Virtualization VMs",
+    "exposedModules": {
+      "VMUSBTab": "./components/VMUSBTab"
+    },
+    "dependencies": {
+      "@console/pluginAPI": "*"
+    }
+  },
+  "scripts": {
+    "build": "webpack --mode production",
+    "dev": "webpack serve --mode development",
+    "lint": "eslint src --ext .ts,.tsx",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@openshift-console/dynamic-plugin-sdk": "^0.0.21",
+    "@openshift-console/dynamic-plugin-sdk-webpack": "^0.0.11",
+    "@patternfly/react-core": "4.276.8",
+    "@patternfly/react-table": "4.113.0",
+    "@patternfly/react-icons": "4.93.6",
+    "react": "^17.0.2",
+    "react-dom": "^17.0.2",
+    "react-router-dom": "^5.3.4"
+  },
+  "devDependencies": {
+    "@types/react": "^17.0.2",
+    "@types/react-dom": "^17.0.2",
+    "@types/react-router-dom": "^5.3.3",
+    "@typescript-eslint/eslint-plugin": "^5.62.0",
+    "@typescript-eslint/parser": "^5.62.0",
+    "css-loader": "^6.11.0",
+    "eslint": "^8.57.0",
+    "eslint-plugin-react": "^7.37.3",
+    "eslint-plugin-react-hooks": "^4.6.0",
+    "style-loader": "^3.3.4",
+    "ts-loader": "^9.5.2",
+    "typescript": "^5.3.3",
+    "webpack": "^5.97.1",
+    "webpack-cli": "^5.1.4",
+    "webpack-dev-server": "^4.15.2"
+  }
+}

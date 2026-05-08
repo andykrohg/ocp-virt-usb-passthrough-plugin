@@ -1,0 +1,32 @@
+# Build stage
+FROM golang:1.23 AS builder
+
+WORKDIR /workspace
+
+# Copy source code
+COPY . .
+
+# Tidy dependencies and build
+RUN go mod tidy && \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o manager main.go
+
+# Runtime stage - use Red Hat UBI for security and supportability
+FROM registry.access.redhat.com/ubi9-micro:latest
+
+WORKDIR /
+
+# Copy binary from builder
+COPY --from=builder /workspace/manager .
+
+# Labels for Red Hat Container Certification
+LABEL name="usb-listener-operator" \
+      vendor="OpenShift" \
+      version="0.1.0" \
+      summary="USB Passthrough Operator for OpenShift Virtualization" \
+      description="Manages USB device passthrough from workstations to VMs using USB/IP protocol"
+
+# OpenShift runs containers with random UIDs, so we don't set USER
+# The binary must be executable by any UID
+RUN chmod 755 /manager
+
+ENTRYPOINT ["/manager"]

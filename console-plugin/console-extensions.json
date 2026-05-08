@@ -1,0 +1,19 @@
+[
+  {
+    "type": "console.tab/horizontalNav",
+    "properties": {
+      "model": {
+        "group": "kubevirt.io",
+        "version": "v1",
+        "kind": "VirtualMachine"
+      },
+      "page": {
+        "name": "USB Devices",
+        "href": "usb"
+      },
+      "component": {
+        "$codeRef": "VMUSBTab"
+      }
+    }
+  }
+]

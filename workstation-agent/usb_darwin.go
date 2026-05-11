@@ -22,7 +22,8 @@ func enumerateUSBDevices() ([]USBDevice, error) {
 		}
 
 		devices, err := parseMacOSUSB(string(output), dataType)
-		if err == nil && len(devices) > 0 {
+		if err == nil {
+			// Success - return devices (even if empty list)
 			return devices, nil
 		}
 	}

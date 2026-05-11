@@ -2,41 +2,78 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
-	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
 	"runtime"
+	"sync"
 	"syscall"
 	"time"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/tools/clientcmd"
+	"github.com/google/uuid"
 )
 
 const (
-	// USB/IP default port
-	DefaultUSBIPPort = 3240
-
-	// Heartbeat interval for device registration
-	HeartbeatInterval = 30 * time.Second
+	// Default HTTP API port
+	DefaultAPIPort = 8080
 )
 
 type Config struct {
-	Kubeconfig  string
-	USBIPPort   int
-	Namespace   string
-	Owner       string
-	ClusterAddr string
+	APIPort    int
+	Owner      string
+	Kubeconfig string
+}
+
+// USBDevice represents a USB device discovered on the workstation
+type USBDevice struct {
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	VendorProduct string `json:"vendorProduct"` // Format: "090c:1000"
+	Vendor        string `json:"vendor"`
+	Product       string `json:"product"`
+	Serial        string `json:"serial"`
+	BusID         string `json:"busID"`
+	IsCAC         bool   `json:"isCAC"`
+	Owner         string `json:"owner"`
+}
+
+// USBConnection represents an active USB passthrough connection
+type USBConnection struct {
+	ID         string    `json:"id"`
+	DeviceID   string    `json:"deviceId"`
+	DeviceName string    `json:"deviceName"`
+	VMName     string    `json:"vmName"`
+	Namespace  string    `json:"namespace"`
+	Status     string    `json:"status"` // "Connecting", "Connected", "Failed"
+	Message    string    `json:"message,omitempty"`
+	StartedAt  time.Time `json:"startedAt"`
+	cmd        *exec.Cmd
+	cancel     context.CancelFunc
+}
+
+// Server manages the HTTP API and active connections
+type Server struct {
+	config      *Config
+	connections map[string]*USBConnection
+	mu          sync.RWMutex
 }
 
 func main() {
+	// Check if we need to elevate privileges
+	if !isElevated() {
+		log.Println("USB passthrough requires elevated privileges. Re-launching with sudo...")
+		if err := relaunchElevated(); err != nil {
+			log.Fatalf("Failed to elevate privileges: %v\n"+
+				"Please run with sudo: sudo ./usb-agent --kubeconfig ~/.kube/config", err)
+		}
+		return
+	}
+
 	config := parseFlags()
 
 	// Setup signal handling
@@ -52,60 +89,82 @@ func main() {
 		cancel()
 	}()
 
-	// Start USB/IP server
-	log.Printf("Starting USB/IP server on port %d...\n", config.USBIPPort)
-	if err := startUSBIPServer(ctx, config.USBIPPort); err != nil {
-		log.Printf("Warning: Failed to start USB/IP server: %v\n", err)
-		log.Println("Continuing without USB/IP server (device registration only mode)")
-		log.Println("USB connections will not work, but devices will be registered in the cluster")
-	}
-
-	// Get local devices
-	devices, err := enumerateUSBDevices()
+	// Check for virtctl
+	virtctlPath, err := exec.LookPath("virtctl")
 	if err != nil {
-		log.Fatalf("Failed to enumerate USB devices: %v", err)
+		log.Fatalf("virtctl not found in PATH. Please install OpenShift Virtualization CLI:\n"+
+			"  Download from: https://docs.openshift.com/container-platform/latest/virt/virt-using-the-cli-tools.html\n"+
+			"  Or install with: brew install virtctl (macOS)")
+	}
+	log.Printf("Found virtctl at: %s\n", virtctlPath)
+
+	// Verify kubeconfig
+	if config.Kubeconfig == "" {
+		log.Println("Warning: No kubeconfig specified. virtctl will use default kubeconfig location.")
+	} else {
+		log.Printf("Using kubeconfig: %s\n", config.Kubeconfig)
 	}
 
-	log.Printf("Found %d USB devices\n", len(devices))
-	for _, dev := range devices {
-		log.Printf("  - %s (%s)\n", dev.Name, dev.VendorProduct)
+	// Initialize server
+	server := &Server{
+		config:      config,
+		connections: make(map[string]*USBConnection),
 	}
 
-	// Connect to cluster
-	if config.Kubeconfig != "" {
-		log.Println("Connecting to cluster...")
-		if err := registerDevices(ctx, config, devices); err != nil {
-			log.Printf("Warning: Failed to register devices with cluster: %v\n", err)
-			log.Println("Running in standalone mode...")
-		} else {
-			log.Println("Devices registered with cluster")
-			// Start heartbeat to keep device registrations fresh
-			go heartbeat(ctx, config, devices)
+	// Setup HTTP routes
+	mux := http.NewServeMux()
+	mux.HandleFunc("/devices", server.handleDevices)
+	mux.HandleFunc("/connections", server.handleConnections)
+	mux.HandleFunc("/attach", server.handleAttach)
+	mux.HandleFunc("/detach/", server.handleDetach)
+
+	// Add CORS middleware
+	handler := corsMiddleware(mux)
+
+	// Start HTTP server
+	httpServer := &http.Server{
+		Addr:    fmt.Sprintf(":%d", config.APIPort),
+		Handler: handler,
+	}
+
+	go func() {
+		log.Printf("Starting HTTP API server on port %d...\n", config.APIPort)
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("HTTP server error: %v", err)
 		}
-	}
+	}()
 
-	// System tray icon (platform-specific)
-	// For now, just print status
-	printStatus(devices, config)
+	printStatus(config)
 
 	// Wait for shutdown
 	<-ctx.Done()
+
+	// Graceful shutdown
+	log.Println("Stopping all USB connections...")
+	server.mu.Lock()
+	for _, conn := range server.connections {
+		if conn.cancel != nil {
+			conn.cancel()
+		}
+	}
+	server.mu.Unlock()
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	httpServer.Shutdown(shutdownCtx)
+
 	log.Println("Shutdown complete")
 }
 
 func parseFlags() *Config {
 	config := &Config{}
 
+	flag.IntVar(&config.APIPort, "port", DefaultAPIPort,
+		"Port for HTTP API server")
+	flag.StringVar(&config.Owner, "owner", getDefaultOwner(),
+		"Owner name for device registration")
 	flag.StringVar(&config.Kubeconfig, "kubeconfig", os.Getenv("KUBECONFIG"),
 		"Path to kubeconfig file (defaults to $KUBECONFIG or ~/.kube/config)")
-	flag.IntVar(&config.USBIPPort, "port", DefaultUSBIPPort,
-		"Port for USB/IP server")
-	flag.StringVar(&config.Namespace, "namespace", "default",
-		"Namespace to register USBDevice resources")
-	flag.StringVar(&config.Owner, "owner", os.Getenv("USER"),
-		"Owner name for device registration")
-	flag.StringVar(&config.ClusterAddr, "cluster", "",
-		"Cluster address to advertise (auto-detected if not specified)")
 
 	flag.Parse()
 
@@ -117,273 +176,310 @@ func parseFlags() *Config {
 		}
 	}
 
-	// Auto-detect cluster address
-	if config.ClusterAddr == "" {
-		config.ClusterAddr = getLocalIP()
-	}
-
 	return config
 }
 
-func startUSBIPServer(ctx context.Context, port int) error {
-	// Check if usbipd is installed
-	usbipd, err := exec.LookPath("usbipd")
+func getDefaultOwner() string {
+	if owner := os.Getenv("USER"); owner != "" {
+		return owner
+	}
+	if owner := os.Getenv("USERNAME"); owner != "" {
+		return owner
+	}
+	hostname, _ := os.Hostname()
+	return hostname
+}
+
+// HTTP Handlers
+
+func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	devices, err := enumerateUSBDevices()
 	if err != nil {
-		return fmt.Errorf("usbipd not found in PATH. Please install USB/IP:\n"+
-			"  Linux: sudo apt install usbip (or yum install usbip-utils)\n"+
-			"  Windows: Install USB/IP for Windows from https://github.com/cezanne/usbip-win\n"+
-			"  macOS: brew install usbip (if available)")
+		log.Printf("Error enumerating USB devices: %v", err)
+		http.Error(w, fmt.Sprintf("Failed to enumerate USB devices: %v", err), http.StatusInternalServerError)
+		return
 	}
 
-	log.Printf("Found usbipd at: %s\n", usbipd)
-
-	// Start usbipd daemon
-	// Platform-specific command construction
-	var cmd *exec.Cmd
-
-	if isWindows() {
-		// Windows: usbipd.exe -d (debug mode for console output)
-		cmd = exec.CommandContext(ctx, usbipd, "-d")
-	} else if isMacOS() {
-		// macOS: usbipd daemon (homebrew version uses subcommand)
-		cmd = exec.CommandContext(ctx, "sudo", usbipd, "daemon")
-	} else {
-		// Linux: sudo usbipd -D (daemon mode)
-		cmd = exec.CommandContext(ctx, "sudo", usbipd, "-D")
+	// Convert to API format
+	apiDevices := make([]USBDevice, len(devices))
+	for i, dev := range devices {
+		apiDevices[i] = USBDevice{
+			ID:            dev.VendorProduct, // Use vendor:product as ID
+			Name:          dev.Name,
+			VendorProduct: dev.VendorProduct,
+			Vendor:        dev.Vendor,
+			Product:       dev.Product,
+			Serial:        dev.Serial,
+			BusID:         dev.BusID,
+			IsCAC:         dev.IsCAC,
+			Owner:         s.config.Owner,
+		}
 	}
 
-	// Capture output for debugging
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(apiDevices)
+}
+
+func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	connections := make([]*USBConnection, 0, len(s.connections))
+	for _, conn := range s.connections {
+		// Don't expose internal fields
+		connections = append(connections, &USBConnection{
+			ID:         conn.ID,
+			DeviceID:   conn.DeviceID,
+			DeviceName: conn.DeviceName,
+			VMName:     conn.VMName,
+			Namespace:  conn.Namespace,
+			Status:     conn.Status,
+			Message:    conn.Message,
+			StartedAt:  conn.StartedAt,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(connections)
+}
+
+func (s *Server) handleAttach(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		DeviceID   string `json:"deviceId"`
+		DeviceName string `json:"deviceName"`
+		VMName     string `json:"vmName"`
+		Namespace  string `json:"namespace"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.DeviceID == "" || req.VMName == "" || req.Namespace == "" {
+		http.Error(w, "Missing required fields: deviceId, vmName, namespace", http.StatusBadRequest)
+		return
+	}
+
+	// Create connection
+	connID := uuid.New().String()
+	ctx, cancel := context.WithCancel(context.Background())
+
+	conn := &USBConnection{
+		ID:         connID,
+		DeviceID:   req.DeviceID,
+		DeviceName: req.DeviceName,
+		VMName:     req.VMName,
+		Namespace:  req.Namespace,
+		Status:     "Connecting",
+		StartedAt:  time.Now(),
+		cancel:     cancel,
+	}
+
+	s.mu.Lock()
+	s.connections[connID] = conn
+	s.mu.Unlock()
+
+	// Start virtctl in background
+	go s.runVirtctl(ctx, conn)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"id":      connID,
+		"status":  "Connecting",
+		"message": "Starting USB redirection...",
+	})
+}
+
+func (s *Server) handleDetach(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Extract connection ID from path: /detach/{id}
+	connID := r.URL.Path[len("/detach/"):]
+	if connID == "" {
+		http.Error(w, "Missing connection ID", http.StatusBadRequest)
+		return
+	}
+
+	s.mu.Lock()
+	conn, exists := s.connections[connID]
+	if !exists {
+		s.mu.Unlock()
+		http.Error(w, "Connection not found", http.StatusNotFound)
+		return
+	}
+
+	// Cancel the context to stop virtctl
+	if conn.cancel != nil {
+		conn.cancel()
+	}
+
+	delete(s.connections, connID)
+	s.mu.Unlock()
+
+	log.Printf("Detached connection %s (device %s from VM %s/%s)\n",
+		connID, conn.DeviceID, conn.Namespace, conn.VMName)
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) runVirtctl(ctx context.Context, conn *USBConnection) {
+	log.Printf("Starting virtctl usbredir for device %s to VM %s/%s\n",
+		conn.DeviceID, conn.Namespace, conn.VMName)
+
+	// Build virtctl command
+	// virtctl usbredir <vendor>:<product> <vm-name> -n <namespace>
+	args := []string{
+		"usbredir",
+		conn.DeviceID,
+		conn.VMName,
+		"-n", conn.Namespace,
+	}
+
+	// Add kubeconfig if specified
+	if s.config.Kubeconfig != "" {
+		args = append([]string{"--kubeconfig", s.config.Kubeconfig}, args...)
+	}
+
+	cmd := exec.CommandContext(ctx, "virtctl", args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
-	log.Println("Starting USB/IP server (requires elevated privileges)...")
+	conn.cmd = cmd
+
+	// Run virtctl
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start usbipd: %w\nMake sure you have permission to run with elevated privileges", err)
+		errMsg := fmt.Sprintf("Failed to start virtctl: %v", err)
+		log.Printf("%s\n", errMsg)
+		s.mu.Lock()
+		conn.Status = "Failed"
+		conn.Message = errMsg
+		s.mu.Unlock()
+		return
 	}
 
-	// Wait for server to be ready
-	time.Sleep(1 * time.Second)
+	log.Printf("virtctl started (PID %d) for device %s\n", cmd.Process.Pid, conn.DeviceID)
 
-	// Verify server is listening
-	if err := checkUSBIPServer(port); err != nil {
-		cmd.Process.Kill()
-		return fmt.Errorf("usbipd started but not listening: %w", err)
+	// Wait a moment for virtctl to initialize and potentially fail fast
+	time.Sleep(500 * time.Millisecond)
+
+	// Check if process is still running
+	if cmd.ProcessState != nil && cmd.ProcessState.Exited() {
+		errMsg := "virtctl exited immediately - device may not be accessible (try running agent with sudo)"
+		log.Printf("%s\n", errMsg)
+		s.mu.Lock()
+		conn.Status = "Failed"
+		conn.Message = errMsg
+		s.mu.Unlock()
+		return
 	}
 
-	log.Printf("USB/IP server listening on port %d\n", port)
+	// Mark as connected
+	s.mu.Lock()
+	conn.Status = "Connected"
+	conn.Message = "USB device redirected to VM"
+	s.mu.Unlock()
 
-	// Keep server running in background
-	go func() {
-		if err := cmd.Wait(); err != nil {
-			log.Printf("usbipd exited: %v\n", err)
-		}
-	}()
-
-	return nil
+	// Wait for completion
+	err := cmd.Wait()
+	if err != nil && ctx.Err() == nil {
+		// Only log error if context wasn't cancelled (i.e., not a normal detach)
+		errMsg := fmt.Sprintf("virtctl exited with error: %v", err)
+		log.Printf("%s\n", errMsg)
+		s.mu.Lock()
+		conn.Status = "Failed"
+		conn.Message = errMsg
+		s.mu.Unlock()
+	} else {
+		log.Printf("virtctl stopped for device %s\n", conn.DeviceID)
+	}
 }
 
-func checkUSBIPServer(port int) error {
-	// Try to connect to the USB/IP port
-	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 2*time.Second)
-	if err != nil {
-		return fmt.Errorf("server not responding on port %d: %w", port, err)
-	}
-	conn.Close()
-	return nil
-}
-
-func isWindows() bool {
-	return runtime.GOOS == "windows"
-}
-
-func isMacOS() bool {
-	return runtime.GOOS == "darwin"
-}
-
-// USBDevice represents a USB device discovered on the workstation
-type USBDevice struct {
-	Name          string
-	VendorProduct string // Format: "090c:1000"
-	Vendor        string
-	Product       string
-	Serial        string
-	BusID         string
-	IsCAC         bool
-}
-
-// enumerateUSBDevices is implemented in platform-specific files:
-// - usb_darwin.go for macOS
-// - usb_linux.go for Linux
-// - usb_windows.go for Windows
-
-func registerDevices(ctx context.Context, config *Config, devices []USBDevice) error {
-	// Load kubeconfig
-	restConfig, err := clientcmd.BuildConfigFromFlags("", config.Kubeconfig)
-	if err != nil {
-		return fmt.Errorf("failed to load kubeconfig: %w", err)
-	}
-
-	// Create dynamic client
-	dynamicClient, err := dynamic.NewForConfig(restConfig)
-	if err != nil {
-		return fmt.Errorf("failed to create Kubernetes client: %w", err)
-	}
-
-	// Define USBDevice GVR (Group/Version/Resource)
-	usbDeviceGVR := schema.GroupVersionResource{
-		Group:    "usb.openshift.io",
-		Version:  "v1alpha1",
-		Resource: "usbdevices",
-	}
-
-	workstationAddr := fmt.Sprintf("%s:%d", config.ClusterAddr, config.USBIPPort)
-	now := metav1.Now()
-
-	// Create or update each device
-	for _, device := range devices {
-		// Generate consistent name from device ID
-		deviceName := fmt.Sprintf("usb-%s-%s",
-			config.Owner,
-			sanitizeName(device.VendorProduct))
-
-		// Build USBDevice resource
-		usbDevice := map[string]interface{}{
-			"apiVersion": "usb.openshift.io/v1alpha1",
-			"kind":       "USBDevice",
-			"metadata": map[string]interface{}{
-				"name":      deviceName,
-				"namespace": config.Namespace,
-			},
-			"spec": map[string]interface{}{
-				"workstationAddress": workstationAddr,
-				"deviceID":           device.VendorProduct,
-				"deviceName":         device.Name,
-				"vendorName":         device.Vendor,
-				"serial":             device.Serial,
-				"isCAC":              device.IsCAC,
-				"owner":              config.Owner,
-			},
-			"status": map[string]interface{}{
-				"available":   true,
-				"connectedTo": "",
-				"lastSeen":    now.Format(time.RFC3339),
-			},
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Allow requests from OpenShift Console
+		origin := r.Header.Get("Origin")
+		if origin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+		} else {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
 		}
 
-		unstructuredDevice := &unstructured.Unstructured{}
-		unstructuredDevice.SetUnstructuredContent(usbDevice)
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
 
-		// Create or update the resource
-		_, err := dynamicClient.Resource(usbDeviceGVR).
-			Namespace(config.Namespace).
-			Create(ctx, unstructuredDevice, metav1.CreateOptions{})
-
-		if err != nil {
-			// If already exists, update it
-			if isAlreadyExistsError(err) {
-				_, err = dynamicClient.Resource(usbDeviceGVR).
-					Namespace(config.Namespace).
-					Update(ctx, unstructuredDevice, metav1.UpdateOptions{})
-				if err != nil {
-					log.Printf("Warning: failed to update device %s: %v\n", deviceName, err)
-				}
-			} else {
-				log.Printf("Warning: failed to create device %s: %v\n", deviceName, err)
-			}
-		}
-	}
-
-	log.Printf("Registered %d devices with cluster\n", len(devices))
-	return nil
-}
-
-func heartbeat(ctx context.Context, config *Config, devices []USBDevice) {
-	ticker := time.NewTicker(HeartbeatInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
+		// Handle preflight
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
 			return
-		case <-ticker.C:
-			// Re-enumerate devices in case USB devices were plugged/unplugged
-			currentDevices, err := enumerateUSBDevices()
-			if err != nil {
-				log.Printf("Heartbeat: failed to enumerate devices: %v\n", err)
-				continue
-			}
-
-			// Update device registrations
-			if err := registerDevices(ctx, config, currentDevices); err != nil {
-				log.Printf("Heartbeat: failed to update devices: %v\n", err)
-			} else {
-				log.Printf("Heartbeat: updated %d devices\n", len(currentDevices))
-			}
 		}
-	}
+
+		next.ServeHTTP(w, r)
+	})
 }
 
-func sanitizeName(s string) string {
-	// Replace invalid Kubernetes name characters
-	// Valid: lowercase alphanumeric, -, .
-	result := ""
-	for _, ch := range s {
-		if (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') {
-			result += string(ch)
-		} else if ch == ':' || ch == '_' || ch == ' ' {
-			result += "-"
-		}
-	}
-	return result
-}
-
-func isAlreadyExistsError(err error) bool {
-	if err == nil {
-		return false
-	}
-	return contains(err.Error(), "already exists")
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) && anySubstring(s, substr))
-}
-
-func anySubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
-}
-
-func printStatus(devices []USBDevice, config *Config) {
+func printStatus(config *Config) {
 	fmt.Println("\n╔════════════════════════════════════════════════════════╗")
 	fmt.Println("║    USB Workstation Agent - Running                     ║")
 	fmt.Println("╚════════════════════════════════════════════════════════╝")
-	fmt.Printf("\n  Port: %d\n", config.USBIPPort)
+	fmt.Printf("\n  API Port: %d\n", config.APIPort)
 	fmt.Printf("  Owner: %s\n", config.Owner)
-	fmt.Printf("  Devices: %d\n\n", len(devices))
+	fmt.Printf("  Platform: %s\n\n", runtime.GOOS)
 
-	for i, dev := range devices {
-		fmt.Printf("  %d. %s (%s)\n", i+1, dev.Name, dev.VendorProduct)
-		if dev.IsCAC {
-			fmt.Println("     🔒 CAC Reader")
-		}
-	}
+	fmt.Println("  Endpoints:")
+	fmt.Printf("    GET  http://localhost:%d/devices\n", config.APIPort)
+	fmt.Printf("    GET  http://localhost:%d/connections\n", config.APIPort)
+	fmt.Printf("    POST http://localhost:%d/attach\n", config.APIPort)
+	fmt.Printf("    DEL  http://localhost:%d/detach/{id}\n\n", config.APIPort)
 
-	fmt.Println("\n  Status: 🟢 Running")
+	fmt.Println("  Status: 🟢 Running (elevated)")
 	fmt.Println("  Press Ctrl+C to stop")
 	fmt.Println()
 }
 
-func getLocalIP() string {
-	conn, err := net.Dial("udp", "8.8.8.8:80")
-	if err != nil {
-		return "127.0.0.1"
+// isElevated checks if the process is running with elevated privileges
+// Platform-specific implementations in privilege_*.go files
+func isElevated() bool {
+	// Unix-like systems (macOS, Linux)
+	if runtime.GOOS != "windows" {
+		return os.Geteuid() == 0
 	}
-	defer conn.Close()
+	// Windows check would go here
+	return false
+}
 
-	localAddr := conn.LocalAddr().(*net.UDPAddr)
-	return localAddr.IP.String()
+// relaunchElevated re-launches the current process with elevated privileges
+func relaunchElevated() error {
+	executable, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("failed to get executable path: %w", err)
+	}
+
+	// Build command with sudo
+	args := append([]string{executable}, os.Args[1:]...)
+	cmd := exec.Command("sudo", args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+
+	return cmd.Run()
 }

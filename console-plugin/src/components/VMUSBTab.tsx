@@ -27,15 +27,34 @@ import {
   UsbIcon,
   ExclamationCircleIcon,
 } from '@patternfly/react-icons';
-import {
-  useK8sWatchResource,
-  k8sCreate,
-  k8sDelete,
-} from '@openshift-console/dynamic-plugin-sdk';
 
 interface VMUSBTabProps {
   obj?: any; // VirtualMachine or VirtualMachineInstance object
 }
+
+interface USBDevice {
+  id: string;
+  name: string;
+  vendorProduct: string;
+  vendor: string;
+  product: string;
+  serial: string;
+  isCAC: boolean;
+  owner: string;
+}
+
+interface USBConnection {
+  id: string;
+  deviceId: string;
+  deviceName: string;
+  vmName: string;
+  namespace: string;
+  status: string;
+  message?: string;
+  startedAt: string;
+}
+
+const AGENT_API_URL = 'http://localhost:8080';
 
 const VMUSBTab: React.FC<VMUSBTabProps> = (props) => {
   const { obj } = props || {};
@@ -44,40 +63,69 @@ const VMUSBTab: React.FC<VMUSBTabProps> = (props) => {
   const [isAttaching, setIsAttaching] = React.useState(false);
   const [error, setError] = React.useState<string>('');
   const [showDetachModal, setShowDetachModal] = React.useState(false);
-  const [deviceToDetach, setDeviceToDetach] = React.useState<any>(null);
+  const [deviceToDetach, setDeviceToDetach] = React.useState<USBConnection | null>(null);
+
+  const [devices, setDevices] = React.useState<USBDevice[]>([]);
+  const [connections, setConnections] = React.useState<USBConnection[]>([]);
+  const [loading, setLoading] = React.useState(true);
+  const [agentConnected, setAgentConnected] = React.useState(false);
 
   const vmName = obj?.metadata?.name;
   const vmNamespace = obj?.metadata?.namespace;
 
-  // Watch USBDevice resources
-  const [usbDevices, devicesLoaded, devicesError] = useK8sWatchResource({
-    groupVersionKind: {
-      group: 'usb.openshift.io',
-      version: 'v1alpha1',
-      kind: 'USBDevice',
-    },
-    isList: true,
-  });
+  // Fetch devices from local agent
+  const fetchDevices = React.useCallback(async () => {
+    try {
+      const response = await fetch(`${AGENT_API_URL}/devices`);
+      if (!response.ok) throw new Error('Failed to fetch devices');
+      const data = await response.json();
+      setDevices(data || []);
+      setAgentConnected(true);
+      setError('');
+    } catch (err: any) {
+      console.error('Failed to fetch devices:', err);
+      setAgentConnected(false);
+      if (!error) {
+        setError('Cannot connect to workstation agent. Make sure it is running on localhost:8080');
+      }
+    }
+  }, [error]);
 
-  // Watch USBConnection resources for this VM
-  const [connections, connectionsLoaded, connectionsError] = useK8sWatchResource({
-    groupVersionKind: {
-      group: 'usb.openshift.io',
-      version: 'v1alpha1',
-      kind: 'USBConnection',
-    },
-    isList: true,
-    namespace: vmNamespace,
-  });
+  // Fetch connections from local agent
+  const fetchConnections = React.useCallback(async () => {
+    try {
+      const response = await fetch(`${AGENT_API_URL}/connections`);
+      if (!response.ok) throw new Error('Failed to fetch connections');
+      const data = await response.json();
+      setConnections(data || []);
+    } catch (err: any) {
+      console.error('Failed to fetch connections:', err);
+    }
+  }, []);
 
-  const availableDevices = React.useMemo(() => {
-    return (usbDevices as any[]) || [];
-  }, [usbDevices]);
+  // Initial fetch and polling
+  React.useEffect(() => {
+    const fetchData = async () => {
+      setLoading(true);
+      await Promise.all([fetchDevices(), fetchConnections()]);
+      setLoading(false);
+    };
+
+    fetchData();
+
+    // Poll every 3 seconds
+    const interval = setInterval(() => {
+      fetchDevices();
+      fetchConnections();
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [fetchDevices, fetchConnections]);
 
   const vmConnections = React.useMemo(() => {
-    return (connections as any[])?.filter(
-      (conn) => conn.spec?.vmName === vmName && conn.spec?.namespace === vmNamespace
-    ) || [];
+    return connections.filter(
+      (conn) => conn.vmName === vmName && conn.namespace === vmNamespace
+    );
   }, [connections, vmName, vmNamespace]);
 
   const handleAttach = async () => {
@@ -87,47 +135,35 @@ const VMUSBTab: React.FC<VMUSBTabProps> = (props) => {
     setError('');
 
     try {
-      const selectedDevice = availableDevices.find(
-        (dev) => dev.spec?.deviceID === selectedDeviceId
-      );
+      const selectedDevice = devices.find((dev) => dev.id === selectedDeviceId);
 
       if (!selectedDevice) {
         throw new Error('Selected device not found');
       }
 
-      const connectionName = `${vmName}-${selectedDeviceId.replace(':', '-')}`;
-
-      const usbConnection = {
-        apiVersion: 'usb.openshift.io/v1alpha1',
-        kind: 'USBConnection',
-        metadata: {
-          name: connectionName,
-          namespace: vmNamespace,
+      const response = await fetch(`${AGENT_API_URL}/attach`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
         },
-        spec: {
-          workstationAddress: selectedDevice.spec?.workstationAddress,
-          deviceID: selectedDeviceId,
-          deviceName: selectedDevice.spec?.deviceName || selectedDeviceId,
+        body: JSON.stringify({
+          deviceId: selectedDeviceId,
+          deviceName: selectedDevice.name,
           vmName: vmName,
           namespace: vmNamespace,
-        },
-      };
-
-      await k8sCreate({
-        model: {
-          apiGroup: 'usb.openshift.io',
-          apiVersion: 'v1alpha1',
-          kind: 'USBConnection',
-          plural: 'usbconnections',
-          abbr: 'USBCONN',
-          label: 'USBConnection',
-          labelPlural: 'USBConnections',
-        },
-        data: usbConnection,
+        }),
       });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText || 'Failed to attach device');
+      }
 
       setSelectedDeviceId('');
       setIsSelectOpen(false);
+
+      // Refresh connections
+      await fetchConnections();
     } catch (err: any) {
       setError(err.message || 'Failed to attach USB device');
     } finally {
@@ -139,32 +175,30 @@ const VMUSBTab: React.FC<VMUSBTabProps> = (props) => {
     if (!deviceToDetach) return;
 
     try {
-      await k8sDelete({
-        model: {
-          apiGroup: 'usb.openshift.io',
-          apiVersion: 'v1alpha1',
-          kind: 'USBConnection',
-          plural: 'usbconnections',
-          abbr: 'USBCONN',
-          label: 'USBConnection',
-          labelPlural: 'USBConnections',
-        },
-        resource: deviceToDetach,
+      const response = await fetch(`${AGENT_API_URL}/detach/${deviceToDetach.id}`, {
+        method: 'DELETE',
       });
+
+      if (!response.ok) {
+        throw new Error('Failed to detach device');
+      }
 
       setShowDetachModal(false);
       setDeviceToDetach(null);
+
+      // Refresh connections
+      await fetchConnections();
     } catch (err: any) {
       setError(err.message || 'Failed to detach USB device');
     }
   };
 
-  const openDetachModal = (connection: any) => {
+  const openDetachModal = (connection: USBConnection) => {
     setDeviceToDetach(connection);
     setShowDetachModal(true);
   };
 
-  if (!devicesLoaded || !connectionsLoaded) {
+  if (loading) {
     return (
       <EmptyState>
         <EmptyStateIcon variant="container" component={Spinner} />
@@ -175,10 +209,30 @@ const VMUSBTab: React.FC<VMUSBTabProps> = (props) => {
     );
   }
 
-  if (devicesError) {
+  if (!agentConnected) {
     return (
-      <Alert variant="danger" title="Error loading USB devices">
-        {devicesError.message}
+      <Alert variant="warning" title="Workstation Agent Not Running" isInline>
+        <p>
+          The USB Passthrough workstation agent is not running on your computer.
+        </p>
+        <p style={{ marginTop: '0.5rem' }}>
+          To use USB device passthrough, you need to:
+        </p>
+        <ol style={{ marginTop: '0.5rem', marginLeft: '1.5rem' }}>
+          <li>
+            <a
+              href="https://github.com/andykrohg/ocp-virt-usb-passthrough-plugin"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Download the workstation agent
+            </a> and run it on your local machine
+          </li>
+          <li>Ensure it's listening on port 8080</li>
+        </ol>
+        <p style={{ marginTop: '0.5rem', fontSize: '0.875rem', color: '#6a6e73' }}>
+          This page will automatically detect the agent when it starts.
+        </p>
       </Alert>
     );
   }
@@ -218,31 +272,30 @@ const VMUSBTab: React.FC<VMUSBTabProps> = (props) => {
               ) : (
                 <List>
                   {vmConnections.map((conn) => {
-                    const phase = conn.status?.phase;
-                    const isConnected = phase === 'Connected';
-                    const isFailed = phase === 'Failed';
+                    const isConnected = conn.status === 'Connected';
+                    const isFailed = conn.status === 'Failed';
 
                     return (
-                      <ListItem key={conn.metadata?.name}>
+                      <ListItem key={conn.id}>
                         <Grid hasGutter>
                           <GridItem span={6 as any}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                               {isConnected && <CheckCircleIcon color="green" />}
                               {isFailed && <ExclamationCircleIcon color="red" />}
-                              <strong>{conn.spec?.deviceName || conn.spec?.deviceID}</strong>
+                              <strong>{conn.deviceName || conn.deviceId}</strong>
                             </div>
                             <div style={{ fontSize: '0.875rem', color: '#6a6e73' }}>
-                              Device ID: {conn.spec?.deviceID}
+                              Device ID: {conn.deviceId}
                             </div>
-                            {conn.status?.message && (
+                            {conn.message && (
                               <div style={{ fontSize: '0.875rem', color: isFailed ? '#c9190b' : '#6a6e73' }}>
-                                {conn.status.message}
+                                {conn.message}
                               </div>
                             )}
                           </GridItem>
                           <GridItem span={3 as any}>
                             <span style={{ fontSize: '0.875rem' }}>
-                              Status: <strong>{phase || 'Unknown'}</strong>
+                              Status: <strong>{conn.status || 'Unknown'}</strong>
                             </span>
                           </GridItem>
                           <GridItem span={3 as any} style={{ textAlign: 'right' }}>
@@ -270,15 +323,14 @@ const VMUSBTab: React.FC<VMUSBTabProps> = (props) => {
               <Title headingLevel="h3">Attach USB Device</Title>
             </CardTitle>
             <CardBody>
-              {availableDevices.length === 0 ? (
+              {devices.length === 0 ? (
                 <Alert variant="info" title="No USB devices available" isInline>
                   <p>
-                    Make sure the workstation agent is running on your computer and USB devices are
-                    connected.
+                    No USB devices detected on your workstation.
                   </p>
                   <p style={{ marginTop: '0.5rem' }}>
-                    Visit the workstation agent documentation to learn how to install and run the
-                    agent.
+                    Make sure USB devices are connected to your computer and the workstation agent
+                    is running.
                   </p>
                 </Alert>
               ) : (
@@ -295,20 +347,16 @@ const VMUSBTab: React.FC<VMUSBTabProps> = (props) => {
                       isOpen={isSelectOpen}
                       placeholderText="Select a USB device..."
                     >
-                      {availableDevices.map((device) => {
-                        const deviceId = device.spec?.deviceID;
-                        const deviceName = device.spec?.deviceName || deviceId;
-                        const isCAC = device.spec?.isCAC;
-
+                      {devices.map((device) => {
                         return (
                           <SelectOption
-                            key={deviceId}
-                            value={deviceId}
-                            description={`ID: ${deviceId} | Owner: ${device.spec?.owner || 'Unknown'}`}
+                            key={device.id}
+                            value={device.id}
+                            description={`ID: ${device.vendorProduct} | Owner: ${device.owner}`}
                           >
-                            {isCAC && '🔒 '}
-                            {deviceName}
-                            {isCAC && ' (CAC Reader)'}
+                            {device.isCAC && '🔒 '}
+                            {device.name}
+                            {device.isCAC && ' (CAC Reader)'}
                           </SelectOption>
                         );
                       })}
@@ -347,7 +395,7 @@ const VMUSBTab: React.FC<VMUSBTabProps> = (props) => {
         ]}
       >
         Are you sure you want to detach{' '}
-        <strong>{deviceToDetach?.spec?.deviceName || deviceToDetach?.spec?.deviceID}</strong> from
+        <strong>{deviceToDetach?.deviceName || deviceToDetach?.deviceId}</strong> from
         this VM?
       </Modal>
     </>

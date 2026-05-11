@@ -72,6 +72,8 @@ const VMUSBTab: React.FC<VMUSBTabProps> = (props) => {
 
   const vmName = obj?.metadata?.name;
   const vmNamespace = obj?.metadata?.namespace;
+  const vmStatus = obj?.status?.printableStatus || obj?.status?.phase || 'Unknown';
+  const isVMRunning = vmStatus === 'Running';
 
   // Fetch devices from local agent
   const fetchDevices = React.useCallback(async () => {
@@ -323,7 +325,19 @@ const VMUSBTab: React.FC<VMUSBTabProps> = (props) => {
               <Title headingLevel="h3">Attach USB Device</Title>
             </CardTitle>
             <CardBody>
-              {devices.length === 0 ? (
+              {!isVMRunning ? (
+                <Alert variant="warning" title="VM is not running" isInline>
+                  <p>
+                    USB devices can only be attached to running VMs.
+                  </p>
+                  <p style={{ marginTop: '0.5rem' }}>
+                    Current VM status: <strong>{vmStatus}</strong>
+                  </p>
+                  <p style={{ marginTop: '0.5rem' }}>
+                    Please start the VM before attaching USB devices.
+                  </p>
+                </Alert>
+              ) : devices.length === 0 ? (
                 <Alert variant="info" title="No USB devices available" isInline>
                   <p>
                     No USB devices detected on your workstation.
@@ -345,6 +359,7 @@ const VMUSBTab: React.FC<VMUSBTabProps> = (props) => {
                       }}
                       selections={selectedDeviceId}
                       isOpen={isSelectOpen}
+                      isDisabled={!isVMRunning}
                       placeholderText="Select a USB device..."
                     >
                       {devices.map((device) => {
@@ -366,7 +381,7 @@ const VMUSBTab: React.FC<VMUSBTabProps> = (props) => {
                     <Button
                       variant="primary"
                       onClick={handleAttach}
-                      isDisabled={!selectedDeviceId || isAttaching}
+                      isDisabled={!selectedDeviceId || isAttaching || !isVMRunning}
                       isLoading={isAttaching}
                     >
                       {isAttaching ? 'Attaching...' : 'Attach Device'}

@@ -60,12 +60,8 @@ The agent will start on `http://localhost:8080`.
 
 ```bash
 cd console-plugin
-npm install
-npm run build
-podman build -t quay.io/youruser/usb-passthrough-plugin:latest -f Containerfile .
-podman push quay.io/youruser/usb-passthrough-plugin:latest
 
-# Deploy to cluster
+# Deploy plugin to cluster
 kubectl apply -f manifests/deployment.yaml
 
 # Enable plugin in console

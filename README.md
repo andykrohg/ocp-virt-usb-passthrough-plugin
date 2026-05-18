@@ -70,6 +70,18 @@ kubectl patch consoles.operator.openshift.io cluster \
   -p '[{"op": "add", "path": "/spec/plugins/-", "value": "usb-passthrough-plugin"}]'
 ```
 
+#### Disconnected Environment
+If you're running this in a cluster that doesn't have Internet access, you'll need to add the console plugin image to your `ImageSetConfiguration` during the mirror process:
+```bash
+apiVersion: mirror.openshift.io/v1alpha2
+kind: ImageSetConfiguration
+metadata:
+  name: console-plugin
+mirror:
+  additionalImages:
+    - name: quay.io/andy_krohg/usb-passthrough-plugin:latest
+```
+
 ### Prerequisites
 
 - **virtctl** installed on workstation ([download](https://docs.openshift.com/container-platform/latest/virt/virt-using-the-cli-tools.html))

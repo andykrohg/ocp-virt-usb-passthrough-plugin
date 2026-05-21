@@ -26,16 +26,16 @@ OpenShift Console Dynamic Plugin for managing USB device passthrough to VMs.
 # Build and push container image
 cd console-plugin
 # Deploy to cluster
-kubectl apply -f manifests/deployment.yaml
+oc apply -f manifests/deployment.yaml
 
 # Enable the plugin in OpenShift Console
-kubectl patch consoles.operator.openshift.io cluster \
+oc patch consoles.operator.openshift.io cluster \
   --type json \
   -p '[{"op": "add", "path": "/spec/plugins/-", "value": "usb-passthrough-plugin"}]'
 
 # Verify deployment
-kubectl get pods -n usb-passthrough-plugin
-kubectl get consoleplugin usb-passthrough-plugin
+oc get pods -n usb-passthrough-plugin
+oc get consoleplugin usb-passthrough-plugin
 ```
 
 The console will restart automatically to load the plugin.
@@ -161,9 +161,9 @@ npm run lint
 ## Troubleshooting
 
 **Plugin not appearing in console:**
-- Check plugin is enabled: `kubectl get consoles.operator.openshift.io cluster -o jsonpath='{.spec.plugins}'`
-- Verify plugin pod is running: `kubectl get pods -n usb-passthrough-plugin`
-- Check console pod logs: `kubectl logs -n openshift-console -l component=ui`
+- Check plugin is enabled: `oc get consoles.operator.openshift.io cluster -o jsonpath='{.spec.plugins}'`
+- Verify plugin pod is running: `oc get pods -n usb-passthrough-plugin`
+- Check console pod logs: `oc logs -n openshift-console -l component=ui`
 
 **No USB devices showing:**
 - Ensure workstation agent is running on localhost:8080

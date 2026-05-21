@@ -16,20 +16,20 @@ fi
 
 # Step 2: Deploy to cluster
 echo "1. Deploying plugin to cluster..."
-kubectl apply -f manifests/deployment.yaml
+oc apply -f manifests/deployment.yaml
 
 echo "Waiting for deployment to be ready..."
-kubectl wait --for=condition=available --timeout=120s \
+oc wait --for=condition=available --timeout=120s \
   deployment/usb-passthrough-plugin -n usb-passthrough-plugin || true
 
 echo ""
 
 # Step 3: Check if plugin is already enabled
-PLUGIN_ENABLED=$(kubectl get consoles.operator.openshift.io cluster -o jsonpath='{.spec.plugins}' | grep -c "usb-passthrough-plugin" || echo "0")
+PLUGIN_ENABLED=$(oc get consoles.operator.openshift.io cluster -o jsonpath='{.spec.plugins}' | grep -c "usb-passthrough-plugin" || echo "0")
 
 if [ "$PLUGIN_ENABLED" == "0" ]; then
     echo "2. Enabling plugin in OpenShift Console..."
-    kubectl patch consoles.operator.openshift.io cluster \
+    oc patch consoles.operator.openshift.io cluster \
       --type json \
       -p '[{"op": "add", "path": "/spec/plugins/-", "value": "usb-passthrough-plugin"}]'
 
@@ -43,9 +43,9 @@ echo ""
 echo "✅ Deployment complete!"
 echo ""
 echo "Plugin status:"
-kubectl get consoleplugin usb-passthrough-plugin
+oc get consoleplugin usb-passthrough-plugin
 echo ""
-kubectl get pods -n usb-passthrough-plugin
+oc get pods -n usb-passthrough-plugin
 echo ""
 echo "To access:"
 echo "  1. Wait for console pods to restart (if first-time deployment)"

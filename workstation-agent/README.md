@@ -171,7 +171,7 @@ curl -X POST http://localhost:8080/attach \
 
 **Agent won't start:**
 - Check if `virtctl` is installed: `which virtctl`
-- Ensure you have a valid kubeconfig: `kubectl get nodes`
+- Ensure you have a valid kubeconfig: `oc get nodes`
 - Verify port 8080 isn't in use: `lsof -i :8080` (macOS/Linux)
 
 **No devices showing:**

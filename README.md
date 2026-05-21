@@ -88,10 +88,10 @@ The agent will auto-elevate and start on `http://localhost:8080`.
 cd console-plugin
 
 # Deploy plugin to cluster
-kubectl apply -f manifests/deployment.yaml
+oc apply -f manifests/deployment.yaml
 
 # Enable plugin in console
-kubectl patch consoles.operator.openshift.io cluster \
+oc patch consoles.operator.openshift.io cluster \
   --type json \
   -p '[{"op": "add", "path": "/spec/plugins/-", "value": "usb-passthrough-plugin"}]'
 ```

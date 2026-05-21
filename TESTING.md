@@ -8,14 +8,14 @@ This guide walks through testing the USB passthrough system end-to-end.
 - At least one Windows VM with `clientPassthrough: {}` enabled in the spec
 - Local workstation with USB devices
 - Network connectivity from workstation to cluster
-- `kubectl` or `oc` CLI configured
+- `oc` or `oc` CLI configured
 
 ## Step 1: Enable USB Passthrough on VM
 
 Edit your VirtualMachine to add `clientPassthrough`:
 
 ```bash
-kubectl edit vm <vm-name> -n <namespace>
+oc edit vm <vm-name> -n <namespace>
 ```
 
 Add under `spec.template.spec.domain.devices`:
@@ -35,7 +35,7 @@ spec:
 Restart the VM for changes to take effect:
 
 ```bash
-kubectl delete vmi <vm-name> -n <namespace>
+oc delete vmi <vm-name> -n <namespace>
 # VM controller will recreate it
 ```
 
@@ -66,10 +66,10 @@ podman push quay.io/yourorg/usb-listener-operator:latest
 # Edit config/manager/deployment.yaml and change image URL
 
 # Deploy operator
-kubectl apply -f config/manager/deployment.yaml
+oc apply -f config/manager/deployment.yaml
 
 # Verify operator is running
-kubectl get pods -n usb-passthrough-system
+oc get pods -n usb-passthrough-system
 ```
 
 Expected output:
@@ -153,10 +153,10 @@ Registered 3 devices with cluster
 
 ```bash
 # List registered USB devices
-kubectl get usbdevices
+oc get usbdevices
 
 # Detailed view
-kubectl get usbdevices -o yaml
+oc get usbdevices -o yaml
 ```
 
 Expected output:
@@ -185,7 +185,7 @@ podman build -t quay.io/yourorg/usb-passthrough-plugin:latest .
 podman push quay.io/yourorg/usb-passthrough-plugin:latest
 
 # Deploy plugin (create deployment manifests)
-# kubectl apply -f manifests/
+# oc apply -f manifests/
 ```
 
 ## Step 8: Test USB Connection via CLI
@@ -193,7 +193,7 @@ podman push quay.io/yourorg/usb-passthrough-plugin:latest
 Create a USBConnection manually:
 
 ```bash
-cat <<EOF | kubectl apply -f -
+cat <<EOF | oc apply -f -
 apiVersion: usb.openshift.io/v1alpha1
 kind: USBConnection
 metadata:
@@ -210,17 +210,17 @@ EOF
 
 Replace:
 - `YOUR_WORKSTATION_IP` with your workstation's IP (shown in agent output)
-- `deviceID` with actual device ID from `kubectl get usbdevices`
+- `deviceID` with actual device ID from `oc get usbdevices`
 - `vmName` and `namespace` with your VM details
 
 ## Step 9: Monitor Connection
 
 ```bash
 # Watch USBConnection status
-kubectl get usbconnection test-usb-connection -o yaml -w
+oc get usbconnection test-usb-connection -o yaml -w
 
 # Check operator logs
-kubectl logs -n usb-passthrough-system -l app=usb-listener-operator -f
+oc logs -n usb-passthrough-system -l app=usb-listener-operator -f
 ```
 
 Expected status progression:
@@ -256,7 +256,7 @@ status:
 
 ```bash
 # Delete the USBConnection
-kubectl delete usbconnection test-usb-connection
+oc delete usbconnection test-usb-connection
 
 # Verify device is removed from VM
 # Check Device Manager in Windows - device should disappear
@@ -287,18 +287,18 @@ Install USB/IP tools (see Step 4).
 
 Run agent with `sudo` (Linux/macOS) or as Administrator (Windows).
 
-### No devices showing in `kubectl get usbdevices`
+### No devices showing in `oc get usbdevices`
 
 Check agent logs:
 - Verify agent is running
 - Check network connectivity to cluster
-- Verify RBAC permissions: `kubectl auth can-i create usbdevices.usb.openshift.io`
+- Verify RBAC permissions: `oc auth can-i create usbdevices.usb.openshift.io`
 
 ### USBConnection stuck in "Connecting"
 
 Check operator logs:
 ```bash
-kubectl logs -n usb-passthrough-system -l app=usb-listener-operator
+oc logs -n usb-passthrough-system -l app=usb-listener-operator
 ```
 
 Common issues:
@@ -323,25 +323,25 @@ Ensure:
 
 Test connectivity from operator pod:
 ```bash
-POD=$(kubectl get pods -n usb-passthrough-system -l app=usb-listener-operator -o name | head -1)
-kubectl exec -n usb-passthrough-system $POD -- nc -zv YOUR_WORKSTATION_IP 3240
+POD=$(oc get pods -n usb-passthrough-system -l app=usb-listener-operator -o name | head -1)
+oc exec -n usb-passthrough-system $POD -- nc -zv YOUR_WORKSTATION_IP 3240
 ```
 
 ## Clean Up
 
 ```bash
 # Delete test connection
-kubectl delete usbconnection --all
+oc delete usbconnection --all
 
 # Delete USB devices
-kubectl delete usbdevices --all
+oc delete usbdevices --all
 
 # Stop workstation agent (Ctrl+C)
 
 # Remove operator
-kubectl delete -f config/manager/deployment.yaml
-kubectl delete -f config/rbac/rbac.yaml
+oc delete -f config/manager/deployment.yaml
+oc delete -f config/rbac/rbac.yaml
 
 # Remove CRDs (this deletes all USBDevice and USBConnection resources)
-kubectl delete -f config/crd/
+oc delete -f config/crd/
 ```

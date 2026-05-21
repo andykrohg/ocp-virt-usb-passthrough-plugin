@@ -134,6 +134,18 @@ mirror:
 - **Valid kubeconfig** for OpenShift cluster
 - **VMs must have `clientPassthrough: {}` enabled** (max 4 USB devices per VM)
 
+### Why Elevated Privileges?
+
+The workstation agent requires Administrator/root privileges because USB device passthrough involves low-level operations that operating systems protect for security:
+
+- **Unbinding USB devices** from their current drivers (keyboard, mouse, storage, etc.)
+- **Binding devices** to USB/IP redirection drivers
+- **Capturing raw USB traffic** to tunnel to remote VMs
+
+Without these privileges, malicious applications could hijack security devices (like CAC readers), steal input from keyboards, or access storage devices without permission. The agent **auto-elevates on startup** (UAC prompt on Windows, sudo on macOS/Linux) and runs privileged for its lifetime. This is the same requirement as running `virtctl usbredir` manually.
+
+**Note:** USB device *enumeration* (listing devices) does not require privileges - only the actual passthrough/redirection does.
+
 ## Usage
 
 1. **Start workstation agent** on your local machine:

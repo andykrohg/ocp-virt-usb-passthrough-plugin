@@ -68,18 +68,35 @@ sudo mv usb-agent /usr/local/bin/
 
 **Valid kubeconfig** with access to your OpenShift cluster.
 
-### Platform-Specific Notes
+### Elevated Privileges Required
+
+**All platforms require Administrator/root privileges** for USB device passthrough. The agent will automatically request elevation on startup.
+
+**Why are elevated privileges needed?**
+
+USB passthrough requires low-level access to the USB subsystem:
+- **Unbind devices** from their current OS drivers (e.g., HID for keyboards, mass storage for USB drives)
+- **Bind devices** to USB/IP redirection drivers that tunnel USB traffic over the network
+- **Capture raw USB communication** to forward to remote VMs
+
+Operating systems protect these operations to prevent malicious applications from:
+- Hijacking security devices (CAC readers, security keys)
+- Capturing keyboard/mouse input
+- Accessing storage devices without permission
+
+**Platform-Specific Behavior:**
 
 **Linux:**
-- No additional requirements
+- Auto-elevates with `sudo` (prompts for password)
+- Requires `virtctl` to be in PATH
 
 **macOS:**
-- USB device access requires sudo/root privileges
-- Agent will automatically request elevation on startup
+- Auto-elevates with `sudo` (prompts for password)
+- May need to grant Terminal.app Full Disk Access in System Settings for full USB enumeration
 
 **Windows:**
-- Run as Administrator
-- May need to allow through Windows Firewall
+- Auto-elevates with UAC prompt (User Account Control)
+- May need to allow through Windows Firewall for console plugin access
 
 ## Usage
 
@@ -186,11 +203,17 @@ curl -X POST http://localhost:8080/attach \
 - Verify VM is running (not stopped)
 - Check VM has `clientPassthrough: {}` enabled in spec
 - Ensure kubeconfig has permissions to access VMs
-- Agent must run with elevated privileges (sudo)
+- **Agent must run with elevated privileges** - virtctl cannot access USB devices without root/Administrator
 
 **Permission denied errors:**
-- Run agent with `sudo` (it will auto-elevate but you may need to start with sudo initially)
-- macOS: Grant Terminal.app Full Disk Access in System Settings
+- If auto-elevation fails, manually run with `sudo` on macOS/Linux or "Run as Administrator" on Windows
+- The agent checks elevation on startup and will attempt to relaunch itself with privileges
+- macOS: Grant Terminal.app Full Disk Access in System Settings for full USB device enumeration
+
+**"Failed to open device" from virtctl:**
+- This means the agent is not running with sufficient privileges
+- USB passthrough requires root/Administrator to unbind devices from OS drivers
+- Restart the agent and approve the sudo/UAC prompt
 
 ## Building from Source
 

@@ -69,6 +69,19 @@ chmod +x usb-agent-linux-amd64
 sudo mv usb-agent-linux-amd64 /usr/local/bin/usb-agent
 ```
 
+**Windows:**
+```powershell
+# Download the binary
+Invoke-WebRequest -Uri "https://github.com/andykrohg/ocp-virt-usb-passthrough-plugin/releases/latest/download/usb-agent-windows-amd64.exe" -OutFile "usb-agent.exe"
+
+# Move to a permanent location (requires Administrator PowerShell)
+New-Item -ItemType Directory -Force -Path "C:\Program Files\usb-agent"
+Move-Item -Force usb-agent.exe "C:\Program Files\usb-agent\usb-agent.exe"
+
+# Add to PATH (optional, for easier access)
+[Environment]::SetEnvironmentVariable("Path", $env:Path + ";C:\Program Files\usb-agent", "Machine")
+```
+
 **Or build from source:**
 ```bash
 cd workstation-agent
@@ -76,8 +89,15 @@ go build -o usb-agent
 ```
 
 **Run the agent:**
+
 ```bash
+# macOS/Linux
 usb-agent --kubeconfig ~/.kube/config
+```
+
+```powershell
+# Windows (run as Administrator or it will auto-elevate via UAC)
+usb-agent.exe --kubeconfig %USERPROFILE%\.kube\config
 ```
 
 The agent will auto-elevate and start on `http://localhost:8080`.
@@ -118,7 +138,11 @@ mirror:
 
 1. **Start workstation agent** on your local machine:
    ```bash
+   # macOS/Linux
    ./usb-agent --kubeconfig ~/.kube/config
+   
+   # Windows
+   usb-agent.exe --kubeconfig %USERPROFILE%\.kube\config
    ```
 
 2. **Open OpenShift Console** in your browser

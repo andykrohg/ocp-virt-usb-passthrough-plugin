@@ -456,30 +456,28 @@ func printStatus(config *Config) {
 	fmt.Println()
 }
 
+// Platform-specific privilege check and elevation functions
+// These are set by init() functions in privilege_windows.go and privilege_unix.go
+var (
+	isElevatedFunc       func() bool
+	relaunchElevatedFunc func() error
+)
+
 // isElevated checks if the process is running with elevated privileges
 // Platform-specific implementations in privilege_*.go files
 func isElevated() bool {
-	// Unix-like systems (macOS, Linux)
-	if runtime.GOOS != "windows" {
-		return os.Geteuid() == 0
+	if isElevatedFunc == nil {
+		// Fallback for platforms without specific implementation
+		return runtime.GOOS == "windows" || os.Geteuid() == 0
 	}
-	// Windows check would go here
-	return false
+	return isElevatedFunc()
 }
 
 // relaunchElevated re-launches the current process with elevated privileges
+// Platform-specific implementations in privilege_*.go files
 func relaunchElevated() error {
-	executable, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("failed to get executable path: %w", err)
+	if relaunchElevatedFunc == nil {
+		return fmt.Errorf("privilege elevation not implemented for platform %s", runtime.GOOS)
 	}
-
-	// Build command with sudo
-	args := append([]string{executable}, os.Args[1:]...)
-	cmd := exec.Command("sudo", args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Stdin = os.Stdin
-
-	return cmd.Run()
+	return relaunchElevatedFunc()
 }

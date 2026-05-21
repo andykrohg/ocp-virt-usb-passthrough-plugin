@@ -1,40 +1,58 @@
 # USB Workstation Agent
 
-Lightweight agent that runs on user workstations to expose USB devices via USB/IP and register them with the cluster.
+Lightweight HTTP API server that exposes local USB devices to the OpenShift Console plugin.
 
 ## Features
 
-- 🔌 Runs USB/IP server to expose local USB devices
-- 📡 Registers available devices with OpenShift cluster
-- 💚 Heartbeat mechanism to keep device list current
-- 🪶 Lightweight (~5MB binary, minimal resource usage)
-- 🖥️ System tray integration (macOS/Windows/Linux)
+- 🔌 Enumerates local USB devices
+- 📡 HTTP API for console plugin integration
+- 🚀 Executes virtctl usbredir for USB passthrough
+- 🔐 Auto-elevation for USB device access
 - 🔒 Identifies CAC card readers automatically
+- 🖥️ Cross-platform (macOS, Linux, Windows)
 
 ## Installation
 
-### From Binary
+### Download Pre-built Binary
 
+Visit the [releases page](https://github.com/andykrohg/ocp-virt-usb-passthrough-plugin/releases) and download the binary for your platform:
+
+**macOS (Apple Silicon):**
 ```bash
-# Download latest release
-curl -LO https://github.com/openshift/usb-workstation-agent/releases/latest/download/usb-agent-darwin-arm64
-
-# Make executable
+curl -LO https://github.com/andykrohg/ocp-virt-usb-passthrough-plugin/releases/latest/download/usb-agent-darwin-arm64
 chmod +x usb-agent-darwin-arm64
-
-# Move to PATH
 sudo mv usb-agent-darwin-arm64 /usr/local/bin/usb-agent
 ```
 
-### From Source
+**macOS (Intel):**
+```bash
+curl -LO https://github.com/andykrohg/ocp-virt-usb-passthrough-plugin/releases/latest/download/usb-agent-darwin-amd64
+chmod +x usb-agent-darwin-amd64
+sudo mv usb-agent-darwin-amd64 /usr/local/bin/usb-agent
+```
+
+**Linux:**
+```bash
+curl -LO https://github.com/andykrohg/ocp-virt-usb-passthrough-plugin/releases/latest/download/usb-agent-linux-amd64
+chmod +x usb-agent-linux-amd64
+sudo mv usb-agent-linux-amd64 /usr/local/bin/usb-agent
+```
+
+**Windows:**
+```powershell
+# Download usb-agent-windows-amd64.exe from releases
+# Move to C:\Program Files\usb-agent\usb-agent.exe
+```
+
+### Build from Source
 
 ```bash
 # Clone repo
-git clone https://github.com/openshift/usb-workstation-agent
-cd usb-workstation-agent
+git clone https://github.com/andykrohg/ocp-virt-usb-passthrough-plugin
+cd ocp-virt-usb-passthrough-plugin/workstation-agent
 
 # Build
-go build -o usb-agent main.go
+go build -o usb-agent
 
 # Install
 sudo mv usb-agent /usr/local/bin/
@@ -42,140 +60,69 @@ sudo mv usb-agent /usr/local/bin/
 
 ## Prerequisites
 
-### Linux
+### All Platforms
 
-Install USB/IP tools:
+**Install virtctl** (required for USB redirection):
+- Download from [OpenShift Virtualization CLI Tools](https://docs.openshift.com/container-platform/latest/virt/virt-using-the-cli-tools.html)
+- Or install via Homebrew: `brew install virtctl` (macOS)
 
-```bash
-# Ubuntu/Debian
-sudo apt install usbip
+**Valid kubeconfig** with access to your OpenShift cluster.
 
-# RHEL/CentOS/Fedora  
-sudo yum install usbip-utils
+### Platform-Specific Notes
 
-# Arch
-sudo pacman -S usbip
-```
+**Linux:**
+- No additional requirements
 
-Load kernel modules:
+**macOS:**
+- USB device access requires sudo/root privileges
+- Agent will automatically request elevation on startup
 
-```bash
-sudo modprobe usbip-core
-sudo modprobe usbip-host
-```
-
-### Windows
-
-1. **Install UsbDk** (required driver):
-   - Download from https://www.spice-space.org/download/windows/usbdk/
-   - Run installer (requires admin privileges)
-   - Reboot after installation
-
-2. **Install USB/IP for Windows**:
-   - Download from https://github.com/cezanne/usbip-win/releases
-   - Extract `usbipd.exe` and `usbip.exe` to `C:\Program Files\usbip` (or add to PATH)
-
-### macOS
-
-```bash
-# Install usbip (via Homebrew if available)
-brew install usbip
-```
-
-**Note**: macOS USB/IP support is experimental. For production, use Linux or Windows workstations.
+**Windows:**
+- Run as Administrator
+- May need to allow through Windows Firewall
 
 ## Usage
 
 ### Basic Usage
 
 ```bash
-# Run with default settings
-usb-agent
+# Run agent (will auto-elevate with sudo if needed)
+./usb-agent --kubeconfig ~/.kube/config
 
-# Specify kubeconfig
-usb-agent --kubeconfig ~/.kube/config
-
-# Custom port
-usb-agent --port 3240
-
-# Specify namespace for device registration
-usb-agent --namespace usb-devices --owner alice
+# Specify custom port
+./usb-agent --kubeconfig ~/.kube/config --port 8080
 ```
 
-### Configuration
-
-The agent accepts the following flags:
+### Configuration Options
 
 - `--kubeconfig` - Path to kubeconfig (default: $KUBECONFIG or ~/.kube/config)
-- `--port` - USB/IP server port (default: 3240)
-- `--namespace` - Namespace for USBDevice resources (default: default)
-- `--owner` - Owner name for device registration (default: $USER)
-- `--cluster` - Cluster address to advertise (auto-detected)
+- `--port` - HTTP API port (default: 8080)
+- `--owner` - Owner name for device identification (default: $USER)
 
-### Auto-Start on Login
+### HTTP API Endpoints
 
-#### macOS (LaunchAgent)
+The agent exposes these endpoints on `localhost:8080`:
 
-Create `~/Library/LaunchAgents/com.openshift.usb-agent.plist`:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.openshift.usb-agent</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/usr/local/bin/usb-agent</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-</dict>
-</plist>
-```
-
-Load it:
-```bash
-launchctl load ~/Library/LaunchAgents/com.openshift.usb-agent.plist
-```
-
-#### Linux (systemd)
-
-Create `/etc/systemd/system/usb-agent.service`:
-
-```ini
-[Unit]
-Description=USB Workstation Agent
-After=network.target
-
-[Service]
-ExecStart=/usr/local/bin/usb-agent
-Restart=always
-User=%u
-
-[Install]
-WantedBy=default.target
-```
-
-Enable it:
-```bash
-systemctl --user enable usb-agent
-systemctl --user start usb-agent
-```
+- `GET /devices` - List local USB devices
+- `GET /connections` - List active USB passthrough connections
+- `POST /attach` - Attach device to VM (starts virtctl usbredir)
+- `DELETE /detach/{id}` - Detach device (stops virtctl)
 
 ## How It Works
 
-1. **Starts USB/IP server** on port 3240 (configurable)
-2. **Enumerates USB devices** using system tools:
-   - macOS: `system_profiler SPUSBHostDataType`
+1. **Enumerates USB devices** using system tools:
+   - macOS: `system_profiler SPUSBDataType`
    - Linux: `lsusb`
-   - Windows: WMI queries
-3. **Registers devices** as `USBDevice` CRs in the cluster
-4. **Sends heartbeats** every 30 seconds to update device status
-5. **Shows system tray icon** with connection status
+   - Windows: PowerShell `Get-PnpDevice`
+
+2. **Exposes HTTP API** on localhost:8080 with CORS enabled for console access
+
+3. **Executes virtctl usbredir** when attach is requested:
+   ```bash
+   virtctl usbredir <vendor>:<product> <vm-name> -n <namespace>
+   ```
+
+4. **Manages processes** - tracks virtctl PIDs and handles cleanup
 
 ## Example Output
 
@@ -184,73 +131,72 @@ systemctl --user start usb-agent
 ║    USB Workstation Agent - Running                     ║
 ╚════════════════════════════════════════════════════════╝
 
-  Port: 3240
-  Owner: alice
-  Devices: 3
+  API Port: 8080
+  Owner: akrohg
+  Platform: darwin
 
-  1. Samsung USB Drive (090c:1000)
-  2. CAC Card Reader (0529:0620)
-     🔒 CAC Reader
-  3. Apple Keyboard (05ac:024f)
+  Endpoints:
+    GET  http://localhost:8080/devices
+    GET  http://localhost:8080/connections
+    POST http://localhost:8080/attach
+    DEL  http://localhost:8080/detach/{id}
 
-  Status: 🟢 Running
+  Status: 🟢 Running (elevated)
   Press Ctrl+C to stop
 ```
 
-## Device Registration
+## Testing
 
-When running, the agent creates `USBDevice` resources in the cluster:
+Test the API directly:
 
-```yaml
-apiVersion: usb.openshift.io/v1alpha1
-kind: USBDevice
-metadata:
-  name: samsung-usb-090c-1000
-  namespace: default
-spec:
-  workstationAddress: "192.168.1.100:3240"
-  deviceID: "090c:1000"
-  deviceName: "Samsung USB Drive"
-  vendorName: "Samsung"
-  serial: "0375420080001253"
-  isCAC: false
-  owner: "alice"
-status:
-  available: true
-  lastSeen: "2026-05-08T10:30:00Z"
+```bash
+# List USB devices
+curl http://localhost:8080/devices | jq
+
+# List active connections
+curl http://localhost:8080/connections | jq
+
+# Attach device (example)
+curl -X POST http://localhost:8080/attach \
+  -H "Content-Type: application/json" \
+  -d '{
+    "deviceId": "04e6:5816",
+    "deviceName": "SCM CAC Reader",
+    "vmName": "windows-vm",
+    "namespace": "default"
+  }'
 ```
-
-These resources are visible in the console plugin for users to select.
-
-## Security
-
-- Agent requires **root/admin privileges** to access USB hardware
-- Recommend running with limited kubeconfig (read-only for devices)
-- USB/IP traffic should be encrypted (TLS wrapper recommended)
-- Firewall rules should restrict USB/IP port to cluster nodes only
 
 ## Troubleshooting
 
 **Agent won't start:**
-- Check if `usbip` is installed: `which usbipd`
-- Ensure you have admin/root privileges
-- Check port 3240 isn't already in use: `lsof -i :3240`
+- Check if `virtctl` is installed: `which virtctl`
+- Ensure you have a valid kubeconfig: `kubectl get nodes`
+- Verify port 8080 isn't in use: `lsof -i :8080` (macOS/Linux)
 
 **No devices showing:**
-- Run `lsusb` (Linux) or `system_profiler SPUSBDataType` (macOS) manually
-- Check USB devices are properly connected
-- Restart agent with verbose logging
+- Run enumeration command manually:
+  - macOS: `system_profiler SPUSBDataType`
+  - Linux: `lsusb`
+  - Windows: `Get-PnpDevice -Class USB`
+- Ensure USB devices are connected
+- Check agent logs for parsing errors
 
-**Can't connect to cluster:**
-- Verify kubeconfig is valid: `kubectl get nodes`
-- Check network connectivity to cluster
-- Ensure RBAC permissions for creating USBDevice resources
+**virtctl fails:**
+- Verify VM is running (not stopped)
+- Check VM has `clientPassthrough: {}` enabled in spec
+- Ensure kubeconfig has permissions to access VMs
+- Agent must run with elevated privileges (sudo)
+
+**Permission denied errors:**
+- Run agent with `sudo` (it will auto-elevate but you may need to start with sudo initially)
+- macOS: Grant Terminal.app Full Disk Access in System Settings
 
 ## Building from Source
 
 ```bash
 # Build for current platform
-go build -o usb-agent main.go
+go build -o usb-agent
 
 # Cross-compile for all platforms
 GOOS=darwin GOARCH=arm64 go build -o usb-agent-darwin-arm64

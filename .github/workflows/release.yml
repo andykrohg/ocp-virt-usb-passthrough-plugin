@@ -1,0 +1,85 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Workstation Agent
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: darwin
+            goarch: amd64
+            output: usb-agent-darwin-amd64
+          - goos: darwin
+            goarch: arm64
+            output: usb-agent-darwin-arm64
+          - goos: linux
+            goarch: amd64
+            output: usb-agent-linux-amd64
+          - goos: linux
+            goarch: arm64
+            output: usb-agent-linux-arm64
+          - goos: windows
+            goarch: amd64
+            output: usb-agent-windows-amd64.exe
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Build binary
+        working-directory: workstation-agent
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          go build -ldflags="-s -w" -o ${{ matrix.output }} .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.output }}
+          path: workstation-agent/${{ matrix.output }}
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: binaries
+
+      - name: Display structure
+        run: ls -R binaries
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            binaries/usb-agent-darwin-amd64/usb-agent-darwin-amd64
+            binaries/usb-agent-darwin-arm64/usb-agent-darwin-arm64
+            binaries/usb-agent-linux-amd64/usb-agent-linux-amd64
+            binaries/usb-agent-linux-arm64/usb-agent-linux-arm64
+            binaries/usb-agent-windows-amd64.exe/usb-agent-windows-amd64.exe
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

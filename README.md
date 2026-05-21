@@ -48,13 +48,39 @@ User Workstation              OpenShift Cluster
 
 ### Install Workstation Agent
 
+**Download pre-built binary:**
+
+Visit the [releases page](https://github.com/andykrohg/ocp-virt-usb-passthrough-plugin/releases) or download directly:
+
+```bash
+# macOS (Apple Silicon)
+curl -LO https://github.com/andykrohg/ocp-virt-usb-passthrough-plugin/releases/latest/download/usb-agent-darwin-arm64
+chmod +x usb-agent-darwin-arm64
+sudo mv usb-agent-darwin-arm64 /usr/local/bin/usb-agent
+
+# macOS (Intel)
+curl -LO https://github.com/andykrohg/ocp-virt-usb-passthrough-plugin/releases/latest/download/usb-agent-darwin-amd64
+chmod +x usb-agent-darwin-amd64
+sudo mv usb-agent-darwin-amd64 /usr/local/bin/usb-agent
+
+# Linux
+curl -LO https://github.com/andykrohg/ocp-virt-usb-passthrough-plugin/releases/latest/download/usb-agent-linux-amd64
+chmod +x usb-agent-linux-amd64
+sudo mv usb-agent-linux-amd64 /usr/local/bin/usb-agent
+```
+
+**Or build from source:**
 ```bash
 cd workstation-agent
 go build -o usb-agent
-./usb-agent --kubeconfig ~/.kube/config
 ```
 
-The agent will start on `http://localhost:8080`.
+**Run the agent:**
+```bash
+usb-agent --kubeconfig ~/.kube/config
+```
+
+The agent will auto-elevate and start on `http://localhost:8080`.
 
 ### Install Console Plugin
 

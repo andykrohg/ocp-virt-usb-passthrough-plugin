@@ -5,37 +5,26 @@ OpenShift Console Dynamic Plugin for managing USB device passthrough to VMs.
 ## Features
 
 - 📱 Browser-based UI integrated into OpenShift Console
-- 🔌 View available USB devices from workstations
-- 🖥️ Select target VMs for USB passthrough
-- ⚡ One-click USB connection creation
+- 🔌 View available USB devices from local workstation
+- 🖥️ Attach/detach USB devices to/from running VMs
+- ⚡ One-click USB connection
 - 📊 Monitor active connections
 - 🎨 PatternFly-based UI matching OpenShift design
-
-## Screenshots
-
-### Main Page
-![USB Passthrough main view showing available devices and VMs]
-
-### Connection Wizard
-![Wizard dialog for creating USB connection]
+- 🔒 CAC reader detection and highlighting
 
 ## Installation
 
 ### Prerequisites
 
-- OpenShift 4.12+ cluster
+- OpenShift 4.12+ cluster with OpenShift Virtualization
 - Console operator with dynamic plugin support enabled
-- USB Listener Operator deployed
+- Workstation agent running on your local machine
 
 ### Deploy to Cluster
 
-**Quick Deploy:**
-
 ```bash
-# Build and push (updates image name in manifests/deployment.yaml first)
-./build.sh
-podman push quay.io/akrohg/usb-passthrough-plugin:latest
-
+# Build and push container image
+cd console-plugin
 # Deploy to cluster
 kubectl apply -f manifests/deployment.yaml
 
@@ -49,27 +38,7 @@ kubectl get pods -n usb-passthrough-plugin
 kubectl get consoleplugin usb-passthrough-plugin
 ```
 
-**Manual Build:**
-
-```bash
-# Install dependencies and build
-npm install
-npm run build
-
-# Build and push container image
-podman build --platform linux/amd64 -t quay.io/akrohg/usb-passthrough-plugin:latest .
-podman push quay.io/akrohg/usb-passthrough-plugin:latest
-```
-
-### Enable Plugin
-
-The plugin is automatically registered with the console when deployed. To manually enable:
-
-```bash
-oc patch consoles.operator.openshift.io cluster \
-  --type json \
-  --patch '[{"op": "add", "path": "/spec/plugins/-", "value": "usb-passthrough-plugin"}]'
-```
+The console will restart automatically to load the plugin.
 
 ## Development
 
@@ -79,80 +48,105 @@ oc patch consoles.operator.openshift.io cluster \
 # Install dependencies
 npm install
 
-# Start development server
-npm run dev
+# Build
+npm run build
 
-# In another terminal, run console with plugin
-oc console --plugins usb-passthrough-plugin=http://localhost:9001
+# Output in dist/
 ```
-
-Navigate to http://localhost:9000 to see the console with your plugin.
 
 ### Project Structure
 
 ```
 console-plugin/
 ├── src/
-│   ├── index.ts                    # Plugin entry point
 │   └── components/
-│       ├── USBPassthroughPage.tsx  # Main page component
-│       ├── USBDeviceList.tsx       # USB device list
-│       ├── VMSelector.tsx          # VM selection dropdown
-│       └── USBConnectionWizard.tsx # Connection creation wizard
+│       └── VMUSBTab.tsx            # USB Devices tab component
 ├── console-extensions.json         # Plugin extension definitions
+├── nginx.conf                      # nginx config for serving plugin
+├── manifests/
+│   └── deployment.yaml             # Kubernetes deployment
+├── Containerfile                   # Container build definition
 ├── package.json
 ├── tsconfig.json
 └── webpack.config.js
 ```
 
-## Console Extensions
+## Console Extension
 
-This plugin provides:
+### USB Devices Tab
 
-### VM Details Tab
+Adds a "USB Devices" tab to VirtualMachine detail pages showing:
 
-- **VMUSBTab**: Adds a "USB Devices" tab to VirtualMachineInstance detail pages
-  - Shows currently connected USB devices for the VM
-  - Lists available USB devices from workstations
-  - Allows attaching/detaching devices with one click
-  - Displays connection status in real-time
+- **Connected USB Devices**: Currently attached devices with status
+  - Device name and ID
+  - Connection status (Connecting, Connected, Failed)
+  - Detach button
+
+- **Attach USB Device**: Interface for attaching new devices
+  - Dropdown of available devices from workstation agent
+  - CAC readers highlighted with 🔒 icon
+  - Attach button (disabled when VM is not running)
+
+- **VM Status Check**: Prevents attaching to stopped VMs with helpful warning
 
 ## API Integration
 
-The plugin watches these Kubernetes resources:
+The plugin communicates with the **workstation agent** running on localhost:
 
-### USBDevice (usb.openshift.io/v1alpha1)
+- `GET http://localhost:8080/devices` - Fetch available USB devices
+- `GET http://localhost:8080/connections` - Fetch active connections
+- `POST http://localhost:8080/attach` - Attach device to VM
+- `DELETE http://localhost:8080/detach/{id}` - Detach device from VM
 
-Lists available USB devices advertised by workstation agents.
-
-### USBConnection (usb.openshift.io/v1alpha1)
-
-Manages active USB passthrough connections. The plugin creates these resources when users click "Connect".
-
-### VirtualMachineInstance (kubevirt.io/v1)
-
-Lists running VMs available for USB passthrough.
+Polls every 3 seconds for real-time updates.
 
 ## User Workflow
 
-1. User navigates to **Virtualization → VirtualMachines** and selects a running VM
-2. User clicks on the **USB Devices** tab in the VM details page
-3. Tab shows:
-   - Currently connected USB devices (if any)
-   - Available USB devices from workstations running the agent
-4. User selects a USB device from the dropdown
-5. User clicks "Attach Device"
-6. Plugin creates USBConnection CR
-7. Operator reconciles and establishes connection via USB/IP
-8. Device appears in the "Connected USB Devices" section with status
-9. User can detach by clicking "Detach" button next to the connected device
+1. **Start workstation agent** on your local machine
+2. **Navigate to Virtualization → VirtualMachines** in OpenShift Console
+3. **Select a VM** (must be running)
+4. **Click "USB Devices" tab**
+5. **Select USB device** from dropdown (CAC readers shown with 🔒)
+6. **Click "Attach Device"**
+7. Device appears in "Connected USB Devices" section with status
+8. **Click "Detach"** to disconnect when done
+
+## Features
+
+### CAC Reader Detection
+
+CAC card readers are automatically detected and highlighted with 🔒 icon.
+
+Known CAC reader vendor IDs:
+- 0x0529 - Aladdin Knowledge Systems
+- 0x04e6 - SCM Microsystems
+- 0x0403 - FTDI
+- 0x076b - OmniKey CardMan
+- 0x058f - Alcor Micro
+
+### VM Status Validation
+
+Plugin prevents attaching USB devices to stopped VMs and displays:
+- Current VM status
+- Warning message
+- Instructions to start the VM first
+
+### Error Handling
+
+- **Agent not running**: Shows installation instructions with GitHub link
+- **Connection failures**: Displays error messages from agent/virtctl
+- **No devices available**: Helpful troubleshooting tips
+
+### Auto-refresh
+
+Plugin automatically detects when the workstation agent starts - no page refresh needed.
 
 ## Styling
 
 The plugin uses:
-- **PatternFly 5** components for UI consistency
-- **OpenShift Console design tokens** for colors and spacing
-- Responsive grid layout for device/VM selection
+- **PatternFly 4** components for UI consistency
+- **OpenShift Console SDK** for platform integration
+- Responsive grid layout
 
 ## Testing
 
@@ -162,46 +156,43 @@ npm run typecheck
 
 # Linting
 npm run lint
-
-# Unit tests (when added)
-npm test
-```
-
-## Building for Production
-
-```bash
-# Production build
-npm run build
-
-# Output in dist/
 ```
 
 ## Troubleshooting
 
 **Plugin not appearing in console:**
-- Check plugin is enabled: `oc get consoles.operator.openshift.io cluster -o yaml`
-- Verify plugin pod is running: `oc get pods -n openshift-console`
-- Check console pod logs: `oc logs -n openshift-console <console-pod>`
+- Check plugin is enabled: `kubectl get consoles.operator.openshift.io cluster -o jsonpath='{.spec.plugins}'`
+- Verify plugin pod is running: `kubectl get pods -n usb-passthrough-plugin`
+- Check console pod logs: `kubectl logs -n openshift-console -l component=ui`
 
 **No USB devices showing:**
-- Ensure workstation agent is running and registered devices
-- Check USBDevice CRs exist: `oc get usbdevice`
-- Verify RBAC permissions for console ServiceAccount
+- Ensure workstation agent is running on localhost:8080
+- Check browser console for CORS errors (F12 → Console)
+- Verify agent responds: `curl http://localhost:8080/devices`
 
-**VMs not appearing:**
-- Check VirtualMachineInstances exist: `oc get vmi`
-- Ensure VMs are in "Running" state
-- Verify kubevirt is installed and working
+**USB Devices tab missing:**
+- Tab only appears on VirtualMachine resources
+- Verify you're viewing a VM details page
+- Check plugin extension loaded: look for "USB Devices" in nav tabs
 
-## Future Enhancements
+**Attach fails:**
+- Check VM is running (tab shows warning if stopped)
+- Verify workstation agent has elevated privileges (sudo)
+- Check agent logs for virtctl errors
+- Ensure VM has `clientPassthrough: {}` enabled
 
-- [ ] Real-time connection status updates
-- [ ] Connection health monitoring
-- [ ] Multi-device selection
-- [ ] Connection history/logs
-- [ ] Device filtering and search
-- [ ] VM favorites/recent connections
-- [ ] Connection templates/profiles
+## Building the Container Image
+
+```bash
+# Build plugin
+npm run build
+
+# Build container (ARM Mac)
+podman build -t quay.io/youruser/usb-passthrough-plugin:latest -f Containerfile .
+
+# Push to registry
+podman push quay.io/youruser/usb-passthrough-plugin:latest
+```
 
 ## License
 
